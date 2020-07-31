@@ -49,7 +49,10 @@ class HexFile:
                 byte_object = bytes.fromhex(hex_object)
 
                 # Convert the byte into ascii
-                ascii_object = byte_object.decode("ascii")
+                try:
+                    ascii_object = byte_object.decode("ascii")
+                except UnicodeDecodeError:
+                    ascii_object = "."
 
                 # Replace the char with a dot if it's a special character
                 special_characters = ["\a", "\b", "\f", "\n", "\r", "\t", "\v"]
@@ -114,14 +117,21 @@ class PyHex(Window):
 
         # Hiding the Cursor
         self.set_cursor_state(0)
+        self.columns = 16
 
-        self.max_lines = curses.LINES - 2  # Max number of lines on the screen
-        self.current = 0  # The selected line
+        self.max_lines = curses.LINES - 3  # Max number of lines on the screen
         self.top_line = 0  # The line at the top of the screen
         self.bottom_line = 0  # The line at the bottom of the screen
 
+        self.cursor_y = 0  # The y coord of the cursor
+        self.cursor_x = 0  # The x coord of the cursor
+        self.cursor_byte = 0  # The position of the cursor in a single byte (0 or 1)
+
         self.up_scroll = -1
         self.down_scroll = 1
+
+        self.left_scroll = -1
+        self.right_scroll = 1
 
         # Creating the variables for the title
         self.title = "PyHex - A Python Hex Viewer"
@@ -131,28 +141,36 @@ class PyHex(Window):
 
         # Creating the variables for the Offset text
         self.offset_title = "Offset (h)"
-        self.offset_title_x = 1
+        self.offset_title_x = 2
         self.offset_title_y = 1
 
         self.offset_len = 8
-        self.offset_content = []
+
+        self.offset_text = []
+        self.offset_text_x = 2
+        self.offset_text_y = 2
 
         # Creating the variables for the Encoded text
         self.encoded_title = ""
-        self.encoded_title_x = 13
+        self.encoded_title_x = 14
         self.encoded_title_y = 1
 
-        self.encoded_title_len = 16
+        self.encoded_text_x = 14
+        self.encoded_text_y = 2
 
         # Creating the variables for the Decoded text
         self.decoded_title = "Decoded text"
         self.decoded_title_x = int
         self.decoded_title_y = 1
 
+        self.decoded_text = []
+        self.decoded_text_x = int
+        self.decoded_text_y = 2
+
         # The File
         self.filename = sys.argv[1]
         # self.filename = "base.py"
-        self.file = HexFile(self.filename, self.encoded_title_len)
+        self.file = HexFile(self.filename, self.columns)
         self.file.start()
 
         # Decode the File into ascii
@@ -172,9 +190,14 @@ class PyHex(Window):
             sys.exit()
 
         if self.key_pressed == curses.KEY_UP:
-            self.scroll(self.up_scroll)
+            self.scroll_vertically(self.up_scroll)
         elif self.key_pressed == curses.KEY_DOWN:
-            self.scroll(self.down_scroll)
+            self.scroll_vertically(self.down_scroll)
+
+        if self.key_pressed == curses.KEY_LEFT:
+            self.scroll_horizontally(self.left_scroll)
+        elif self.key_pressed == curses.KEY_RIGHT:
+            self.scroll_horizontally(self.right_scroll)
 
     def update(self):
         # Calculating the coordinates of the title
@@ -182,22 +205,23 @@ class PyHex(Window):
 
         # Generating the Encoded title
         self.encoded_title = ""
-        for i in range(0, self.encoded_title_len):
+        for i in range(0, self.columns):
             hex_ch = hex(i).replace("x", "").upper()
             if i >= 16:
                 hex_ch = hex_ch.lstrip("0")
             self.encoded_title += hex_ch + " "
 
         # Calculating the coordinates of the Decoded title
-        self.decoded_title_x = self.encoded_title_x + len(self.encoded_title) + 2
+        self.decoded_title_x = self.encoded_title_x + len(self.encoded_title) + 3
+        self.decoded_text_x = self.decoded_title_x
 
         # Calculating the offset
         total_lines = len(self.file.hex_array)
-        self.offset_content = []
+        self.offset_text = []
         for i in range(0, total_lines):
-            offset = hex(i * self.encoded_title_len).replace("x", "").upper()
+            offset = hex(i * self.columns).replace("x", "").upper()
             offset = "0" * (self.offset_len - len(str(offset))) + str(offset)
-            self.offset_content.append(offset)
+            self.offset_text.append(offset)
 
     def late_update(self):
         # Drawing the title
@@ -217,18 +241,21 @@ class PyHex(Window):
                        self.decoded_title, 1)
 
         # Drawing the Content of the File
-        y_coord = self.encoded_title_y + 1
-        x_coord = self.encoded_title_x
+        y_coord = self.encoded_text_y + 1
+        x_coord = self.encoded_text_x
         x_offset = 0
 
         lines = self.file.hex_array[self.top_line:self.top_line + self.max_lines]
 
-        for i, line in enumerate(lines):
-            if i == self.current:
-                self.draw_text(y_coord, x_coord, " "*((self.encoded_title_len*3)-1), 3)
-            for byte in line:
-                if i == self.current:
-                    self.draw_text(y_coord, x_coord + x_offset, byte, 3)
+        for _y, line in enumerate(lines):
+            for _x, byte in enumerate(line):
+                if _y == self.cursor_y and _x == self.cursor_x:
+                    if self.cursor_byte == 0:
+                        self.draw_text(y_coord, x_coord + x_offset, byte[:1], 3)
+                        self.draw_text(y_coord, x_coord + x_offset + 1, byte[1:], 1)
+                    else:
+                        self.draw_text(y_coord, x_coord + x_offset, byte[:1], 1)
+                        self.draw_text(y_coord, x_coord + x_offset + 1, byte[1:], 3)
                 else:
                     self.draw_text(y_coord, x_coord + x_offset, byte, 1)
                 x_offset += 3
@@ -236,18 +263,18 @@ class PyHex(Window):
             y_coord += 1
 
         # Drawing the Offset
-        y_coord = self.offset_title_y + 1
-        x_coord = self.offset_title_x
+        y_coord = self.offset_text_y + 1
+        x_coord = self.offset_text_x
 
-        offsets = self.offset_content[self.top_line:self.max_lines + self.top_line]
+        offsets = self.offset_text[self.top_line:self.max_lines + self.top_line]
 
         for offset in offsets:
             self.draw_text(y_coord, x_coord, offset, 1)
             y_coord += 1
 
         # Draw the decoded text
-        y_coord = self.decoded_title_y + 1
-        x_coord = self.decoded_title_x
+        y_coord = self.decoded_text_y + 1
+        x_coord = self.decoded_text_x
         x_offset = 0
 
         lines = self.decoded_text[self.top_line:self.top_line + self.max_lines]
@@ -266,17 +293,49 @@ class PyHex(Window):
         # self.draw_text(5, self.title_x + 4, "self.max_lines : " + str(self.max_lines), 1)
         # self.draw_text(6, self.title_x + 4, "self.current : " + str(self.current), 1)
 
-    def scroll(self, direction):
+    def scroll_horizontally(self, direction):
+        """
+        Moves the cursor to the left/right using the left/right arrow keys
+        :param direction: The direction of the Scrolling (Left or Right)
+        """
+        # next cursor position after scrolling
+        next_position = self.cursor_x + direction
+
+        # Scroll left
+        # current cursor position or left position is greater than 0
+        if (direction == self.left_scroll) and (self.cursor_x >= 0):
+            if self.cursor_byte == 1:
+                self.cursor_byte = 0
+            else:
+                if next_position < 0:
+                    return
+                self.cursor_x = next_position
+                self.cursor_byte = 1
+            return
+
+        # Scroll right
+        # absolute position of next cursor is not the right edge
+        if (direction == self.right_scroll) and (next_position < self.columns + 1):
+            if self.cursor_byte == 0:
+                self.cursor_byte = 1
+            else:
+                if next_position >= self.columns:
+                    return
+                self.cursor_x = next_position
+                self.cursor_byte = 0
+            return
+
+    def scroll_vertically(self, direction):
         """
         Scrolling the window when pressing up/down arrow keys
         :param direction: The direction of the Scrolling (Up or Down)
         """
         # next cursor position after scrolling
-        next_line = self.current + direction
+        next_line = self.cursor_y + direction
 
         # Up direction scroll overflow
         # current cursor position is 0, but top position is greater than 0
-        if (direction == self.up_scroll) and (self.top_line > 0 and self.current == 0):
+        if (direction == self.up_scroll) and (self.top_line > 0 and self.cursor_y == 0):
             self.top_line += direction
             return
 
@@ -290,8 +349,8 @@ class PyHex(Window):
 
         # Scroll up
         # current cursor position or top position is greater than 0
-        if (direction == self.up_scroll) and (self.top_line > 0 or self.current > 0):
-            self.current = next_line
+        if (direction == self.up_scroll) and (self.top_line > 0 or self.cursor_y > 0):
+            self.cursor_y = next_line
             return
 
         # Scroll down
@@ -299,7 +358,7 @@ class PyHex(Window):
         # and absolute position of next cursor could not touch the bottom
         if (direction == self.down_scroll) and (next_line < self.max_lines) \
                 and (self.top_line + next_line < self.bottom_line):
-            self.current = next_line
+            self.cursor_y = next_line
             return
 
 
